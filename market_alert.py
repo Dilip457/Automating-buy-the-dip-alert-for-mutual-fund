@@ -56,6 +56,10 @@ if __name__ == "__main__":
         exit(1)
 
     # Convert comma-separated string into list
+    def build_message():
+        return "🚀 Market Alert: Data successfully fetched from NSE India!"
+
+    
     CHAT_IDS = [cid.strip() for cid in CHAT_IDS_RAW.split(",") if cid.strip()]
 
     print("Fetching index data from NSE India…")
