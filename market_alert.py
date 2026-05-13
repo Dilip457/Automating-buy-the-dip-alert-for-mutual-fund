@@ -16,8 +16,8 @@ import pytz
 # Verify at: https://finance.yahoo.com/quote/^NSEI
 INDICES = {
     "🏦 Nifty 50":           {"ticker": "^NSEI",      "fund": "Large Cap Index"},
-    "📈 Nifty Midcap 150":   {"ticker": "^NIFMDCP150","fund": "Edelweiss Mid Cap"},
-    "🚀 Nifty Smallcap 250": {"ticker": "^NIFSMCP250","fund": "Nippon Small Cap"},
+    "📈 Nifty Midcap 150":   {"ticker": "NIFTYMIDCAP150.NS","fund": "Edelweiss Mid Cap"},
+    "🚀 Nifty Smallcap 250": {"ticker": "NIFTYSMLCAP250.NS","fund": "Nippon Small Cap"},
 }
 
 # ── Dip Level Thresholds (customize as per your strategy) ────────────────────
