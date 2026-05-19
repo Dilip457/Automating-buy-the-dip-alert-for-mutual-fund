@@ -68,7 +68,7 @@ market_alert.py runs
 ### Step 2 — Get Your Personal Chat ID
 
 1. Search **@userinfobot** on Telegram → tap **Start**
-2. It replies with your **Chat ID** (a number like `764480409`)
+2. It replies with your **Chat ID** (a number like `########`)
 3. Open your new bot and send it `/start` — this is mandatory before the bot can message you
 
 ---
@@ -108,7 +108,7 @@ Go to your repo → **Settings → Secrets and variables → Actions → New rep
 | Secret Name | Value | Example |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | Your bot token from Step 1 | `123456789:ABCdef...` |
-| `TELEGRAM_CHAT_IDS` | Comma-separated list of chat IDs | `765550779,-1003978988899` |
+| `TELEGRAM_CHAT_IDS` | Comma-separated list of chat IDs | `7######9,-1###########9` |
 
 For `TELEGRAM_CHAT_IDS`:
 - Personal chat ID: just the number (e.g. `764480409`)
@@ -243,7 +243,6 @@ Just append to `TELEGRAM_CHAT_IDS` in GitHub Secrets (comma-separated):
 | `NSE connection failed` | NSE blocked GitHub IP temporarily | Re-run workflow; usually resolves itself |
 | Index not found error | Wrong `nse_index` symbol | Check exact symbol in NSE API response |
 | Workflow not running on schedule | GitHub disabled it after 60 days | The keep-alive job prevents this automatically |
-| Wrong 52W data | Don't use Yahoo Finance for NSE indices | This script uses NSE's own API — should always be accurate |
 
 ---
 
