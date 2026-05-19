@@ -108,7 +108,7 @@ Go to your repo → **Settings → Secrets and variables → Actions → New rep
 | Secret Name | Value | Example |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | Your bot token from Step 1 | `123456789:ABCdef...` |
-| `TELEGRAM_CHAT_IDS` | Comma-separated list of chat IDs | `764480409,-1003996983943` |
+| `TELEGRAM_CHAT_IDS` | Comma-separated list of chat IDs | `765550779,-1003978988899` |
 
 For `TELEGRAM_CHAT_IDS`:
 - Personal chat ID: just the number (e.g. `764480409`)
