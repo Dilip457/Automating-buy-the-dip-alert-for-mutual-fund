@@ -4,7 +4,7 @@ on:
   # ── Runs every weekday at 4:00 PM IST (10:30 AM UTC) ──────────────────────
   # NSE closes at 3:30 PM IST, so this fires 30 min after close
   schedule:
-    - cron: '30 10 * * 1-5'
+  - cron: '30 9 * * 1-5'
 
   # ── Also allows manual trigger from GitHub UI ──────────────────────────────
   workflow_dispatch:
