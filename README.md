@@ -58,7 +58,7 @@ market_alert.py runs
 
 1. Open Telegram → search **@BotFather** → tap **Start**
 2. Send `/newbot`
-3. Give it a name (e.g. `Market Dip Monitor`) and a username (e.g. `my_dip_monitor_bot`)
+3. Give it a name (e.g. `Market Dip Alert`) and a username (e.g. `my_dip_monitor_bot`)
 4. Copy the **Bot Token** (looks like `123456789:ABCdef...`)
 
 > ⚠️ Keep this token private. Anyone with it can use your bot.
@@ -111,10 +111,10 @@ Go to your repo → **Settings → Secrets and variables → Actions → New rep
 | `TELEGRAM_CHAT_IDS` | Comma-separated list of chat IDs | `7######9,-1###########9` |
 
 For `TELEGRAM_CHAT_IDS`:
-- Personal chat ID: just the number (e.g. `764480409`)
+- Personal chat ID: just the number (e.g. `7#######9`)
 - Public channel: `@channel_username`
 - Private channel: `-100xxxxxxxxxx`
-- Multiple: separate with commas — `764480409,-1003996983943`
+- Multiple: separate with commas — `7#######9,-1############3`
 
 ---
 
