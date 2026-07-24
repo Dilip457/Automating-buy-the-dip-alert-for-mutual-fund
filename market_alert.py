@@ -48,23 +48,44 @@ NSE_HEADERS = {
 
 
 # ── NSE session ───────────────────────────────────────────────────────────────
+MAX_RETRIES  = 3
+TIMEOUT_HOME = 30   # homepage can be slow
+TIMEOUT_API  = 30   # allIndices API call
+
 def build_nse_session() -> requests.Session:
     """
     NSE requires valid cookies before API calls.
     Visit homepage + indices page first to seed the session.
+    Retries up to MAX_RETRIES times on failure.
     """
-    session = requests.Session()
-    session.headers.update(NSE_HEADERS)
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            session = requests.Session()
+            session.headers.update(NSE_HEADERS)
 
-    print("  Visiting NSE homepage for cookies…")
-    session.get("https://www.nseindia.com", timeout=15)
-    time.sleep(2)
+            print(f"  [Attempt {attempt}] Visiting NSE homepage for cookies…")
+            session.get("https://www.nseindia.com", timeout=TIMEOUT_HOME)
+            time.sleep(3)
 
-    print("  Visiting indices page…")
-    session.get("https://www.nseindia.com/market-data/live-equity-market", timeout=15)
-    time.sleep(1)
+            print(f"  [Attempt {attempt}] Visiting indices page…")
+            session.get(
+                "https://www.nseindia.com/market-data/live-equity-market",
+                timeout=TIMEOUT_HOME,
+            )
+            time.sleep(2)
 
-    return session
+            return session
+
+        except Exception as e:
+            print(f"  ⚠️ Session attempt {attempt} failed: {e}")
+            if attempt < MAX_RETRIES:
+                wait = attempt * 10   # 10s, 20s, 30s
+                print(f"  Retrying in {wait}s…")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(
+                    f"NSE session failed after {MAX_RETRIES} attempts: {e}"
+                ) from e
 
 
 # ── Fetch all index data in one API call ──────────────────────────────────────
@@ -72,13 +93,32 @@ def fetch_all_indices(session: requests.Session) -> list:
     """
     Calls NSE allIndices API — returns live quote + yearHigh + yearLow
     for every index in a single request.
+    Retries up to MAX_RETRIES times on timeout/error.
     """
-    resp = session.get("https://www.nseindia.com/api/allIndices", timeout=20)
-    resp.raise_for_status()
-    data = resp.json().get("data", [])
-    if not data:
-        raise ValueError("NSE allIndices returned empty data")
-    return data
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(f"  [Attempt {attempt}] Calling allIndices API…")
+            resp = session.get(
+                "https://www.nseindia.com/api/allIndices",
+                timeout=TIMEOUT_API,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                raise ValueError("NSE allIndices returned empty data")
+            print(f"  ✅ Got data for {len(data)} indices.")
+            return data
+
+        except Exception as e:
+            print(f"  ⚠️ API attempt {attempt} failed: {e}")
+            if attempt < MAX_RETRIES:
+                wait = attempt * 10
+                print(f"  Retrying in {wait}s…")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(
+                    f"allIndices API failed after {MAX_RETRIES} attempts: {e}"
+                ) from e
 
 
 # ── Extract stats for one index ───────────────────────────────────────────────
