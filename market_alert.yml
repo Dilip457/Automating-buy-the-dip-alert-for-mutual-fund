@@ -1,18 +1,15 @@
 name: Daily Market Dip Alert
 
 on:
-  # ── Runs every weekday at 4:00 PM IST (10:30 AM UTC) ──────────────────────
-  # NSE closes at 3:30 PM IST, so this fires 30 min after close
   schedule:
-  - cron: '30 9 * * 1-5'
-
-  # ── Also allows manual trigger from GitHub UI ──────────────────────────────
+    # 4:30 PM IST = 11:00 AM UTC (30 min after NSE close, bhavcopy is published by then)
+    - cron: '00 11 * * 1-5'
   workflow_dispatch:
 
 jobs:
   send-market-alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -29,32 +26,5 @@ jobs:
       - name: Run market dip alert
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_IDS:   ${{ secrets.TELEGRAM_CHAT_IDS }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python market_alert.py
-
-  # ── Keep-alive: prevents GitHub from disabling scheduled workflows ─────────
-  # GitHub auto-disables schedules after 60 days of repo inactivity.
-  # This job commits a tiny timestamp file every Sunday to keep the repo alive.
-  keep-alive:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Keep repo alive (prevent 60-day auto-disable)
-        run: |
-          # Only touch the file on Sundays (cron runs Mon–Fri, so skip weekdays)
-          DAY=$(date +%u)   # 1=Mon … 7=Sun
-          if [ "$DAY" = "1" ]; then
-            # Touch on Monday (first run of the week) as a lightweight heartbeat
-            echo "Last heartbeat: $(date -u)" > .github/keep_alive.txt
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add .github/keep_alive.txt
-            git diff --cached --quiet || git commit -m "chore: weekly keep-alive [skip ci]"
-            git push
-          else
-            echo "Not Monday — skipping keep-alive commit."
-          fi
