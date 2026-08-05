@@ -256,24 +256,21 @@ def build_message() -> str:
             da = get_index_stats(all_data, comp["fund_a"]["nse_index"])
             db = get_index_stats(all_data, comp["fund_b"]["nse_index"])
 
-            sign_a = "+" if da["day_pct"] >= 0 else ""
-            sign_b = "+" if db["day_pct"] >= 0 else ""
+            # Format daily return with explicit + for gains, - for losses
+            ret_a = f"+{da['day_pct']:.2f}%" if da["day_pct"] >= 0 else f"{da['day_pct']:.2f}%"
+            ret_b = f"+{db['day_pct']:.2f}%" if db["day_pct"] >= 0 else f"{db['day_pct']:.2f}%"
 
             # Determine today's outperformer
             if da["day_pct"] > db["day_pct"]:
-                verdict = f"🏆 Active ({comp['fund_a']['label']}) outperformed today"
+                verdict = f"🏆 {comp['fund_a']['label']} outperformed today"
             elif db["day_pct"] > da["day_pct"]:
-                verdict = f"🏆 Momentum ({comp['fund_b']['label']}) outperformed today"
+                verdict = f"🏆 {comp['fund_b']['label']} outperformed today"
             else:
-                verdict = "🤝 Both indices moved equally today"
+                verdict = "🤝 Both funds moved equally today"
 
             lines += [
-                f"  📌 {comp['fund_a']['label']}",
-                f"     Today : `{sign_a}{da['day_pct']:.2f}%`  ({sign_a}{da['day_pts']:,.2f} pts)",
-                f"     Now   : `{da['current']:,.2f}`  |  52W ↑ drop: `{da['drop_pct']:+.2f}%`",
-                f"  📌 {comp['fund_b']['label']}",
-                f"     Today : `{sign_b}{db['day_pct']:.2f}%`  ({sign_b}{db['day_pts']:,.2f} pts)",
-                f"     Now   : `{db['current']:,.2f}`  |  52W ↑ drop: `{db['drop_pct']:+.2f}%`",
+                f"  📌 {comp['fund_a']['label']}: `{ret_a}`",
+                f"  📌 {comp['fund_b']['label']}: `{ret_b}`",
                 f"  {verdict}",
                 "",
             ]
