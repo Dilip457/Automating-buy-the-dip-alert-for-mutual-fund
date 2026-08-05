@@ -2,6 +2,7 @@
 Daily Market Dip Monitor — FINAL
 Data   : NSE India official API (allIndices endpoint)
          Returns yearHigh / yearLow directly — same data as nseindia.com
+         mfapi.in for actual mutual fund NAV daily returns
 Notify : Multiple Telegram chats / channels (comma-separated TELEGRAM_CHAT_IDS)
 """
 
@@ -29,32 +30,34 @@ INDICES = {
 }
 
 # ── Fund comparison config ────────────────────────────────────────────────────
-# Each entry compares an active fund's benchmark vs a momentum/factor index
-# to show which strategy outperformed on a given day.
+# amfi_code: AMFI scheme code — verify at https://api.mfapi.in/mf/search?q=<name>
+# Daily return is calculated from actual NAV (nav_today - nav_prev) / nav_prev * 100
 COMPARISONS = [
     {
         "title":  "🔄 Small Cap — Active vs Momentum Quality",
         "fund_a": {
-            "label":     "Nippon Small Cap Direct Growth",
-            "nse_index": "NIFTY SMLCAP 250",
+            "label":     "Nippon India Small Cap Fund Direct Growth",
+            "amfi_code": 118778,
         },
         "fund_b": {
-            "label":     "Mirae Asset Nifty Smallcap 250 Momentum Quality 100 ETF FOF",
-            "nse_index": "NIFTYSML250MQ 100",
+            "label":     "Mirae Asset Nifty Smallcap 250 Momentum Quality 100 ETF FOF Direct",
+            "amfi_code": 152459,
         },
     },
     {
         "title":  "🔄 Mid Cap — Active vs Momentum",
         "fund_a": {
-            "label":     "Edelweiss Midcap Direct Growth",
-            "nse_index": "NIFTY MIDCAP 150",
+            "label":     "Edelweiss Mid Cap Fund Direct Growth",
+            "amfi_code": 140228,
         },
         "fund_b": {
-            "label":     "Edelweiss Nifty Midcap 150 Momentum 50 Index Fund",
-            "nse_index": "NIFTYM150MOMNTM50",
+            "label":     "Edelweiss Nifty Midcap 150 Momentum 50 Index Fund Direct",
+            "amfi_code": 150902,
         },
     },
 ]
+
+MFAPI_BASE = "https://api.mfapi.in/mf"
 
 DIP_LEVELS = [
     (5,  "🟡 Minor dip  — Consider small lump sum (~1x SIP)"),
@@ -186,6 +189,30 @@ def get_index_stats(all_data: list, nse_index: str) -> dict:
     )
 
 
+# ── Fetch actual mutual fund NAV daily return from mfapi.in ───────────────────
+def get_fund_daily_return(amfi_code: int, label: str) -> float:
+    """
+    Fetches the latest two NAV entries for a mutual fund from mfapi.in
+    and returns the daily return % calculated as:
+        (nav_today - nav_prev) / nav_prev * 100
+
+    amfi_code: AMFI scheme code (find at https://api.mfapi.in/mf/search?q=...)
+    """
+    url  = f"{MFAPI_BASE}/{amfi_code}"
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+    if len(data) < 2:
+        raise ValueError(
+            f"Not enough NAV history for '{label}' (AMFI code {amfi_code})"
+        )
+    nav_today = float(data[0]["nav"])
+    nav_prev  = float(data[1]["nav"])
+    if nav_prev == 0:
+        raise ValueError(f"Previous NAV is zero for '{label}' (AMFI code {amfi_code})")
+    return round((nav_today - nav_prev) / nav_prev * 100, 2)
+
+
 # ── Buy signal ────────────────────────────────────────────────────────────────
 def get_signal(drop_pct: float) -> str:
     signal = "🟢 Near 52W high — Stick to regular SIP"
@@ -241,36 +268,36 @@ def build_message() -> str:
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    # ── Section 2 : Daily return comparison (new) ─────────────────────────────
+    # ── Section 2 : Daily NAV return comparison (new) ─────────────────────────
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "📈 *DAILY RETURN COMPARISON*",
-        "_(Active fund benchmark vs Momentum/Factor index — today's performance)_",
+        "_(Actual fund NAV returns — Active vs Momentum)_",
         "━━━━━━━━━━━━━━━━━━━━━━\n",
     ]
 
     for comp in COMPARISONS:
         lines.append(f"*{comp['title']}*")
         try:
-            da = get_index_stats(all_data, comp["fund_a"]["nse_index"])
-            db = get_index_stats(all_data, comp["fund_b"]["nse_index"])
+            ret_a = get_fund_daily_return(comp["fund_a"]["amfi_code"], comp["fund_a"]["label"])
+            ret_b = get_fund_daily_return(comp["fund_b"]["amfi_code"], comp["fund_b"]["label"])
 
-            # Format daily return with explicit + for gains, - for losses
-            ret_a = f"+{da['day_pct']:.2f}%" if da["day_pct"] >= 0 else f"{da['day_pct']:.2f}%"
-            ret_b = f"+{db['day_pct']:.2f}%" if db["day_pct"] >= 0 else f"{db['day_pct']:.2f}%"
+            # Format with explicit sign
+            fmt_a = f"+{ret_a:.2f}%" if ret_a >= 0 else f"{ret_a:.2f}%"
+            fmt_b = f"+{ret_b:.2f}%" if ret_b >= 0 else f"{ret_b:.2f}%"
 
             # Determine today's outperformer
-            if da["day_pct"] > db["day_pct"]:
+            if ret_a > ret_b:
                 verdict = f"🏆 {comp['fund_a']['label']} outperformed today"
-            elif db["day_pct"] > da["day_pct"]:
+            elif ret_b > ret_a:
                 verdict = f"🏆 {comp['fund_b']['label']} outperformed today"
             else:
-                verdict = "🤝 Both funds moved equally today"
+                verdict = "🤝 Both funds returned equally today"
 
             lines += [
-                f"  📌 {comp['fund_a']['label']}: `{ret_a}`",
-                f"  📌 {comp['fund_b']['label']}: `{ret_b}`",
+                f"  📌 {comp['fund_a']['label']}: `{fmt_a}`",
+                f"  📌 {comp['fund_b']['label']}: `{fmt_b}`",
                 f"  {verdict}",
                 "",
             ]
@@ -279,7 +306,7 @@ def build_message() -> str:
 
     lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
-        "_Data via NSE India (official). Not financial advice._",
+        "_Data: NSE India (dip monitor) & AMFI via mfapi.in (NAV returns). Not financial advice._",
     ]
     return "\n".join(lines)
 
