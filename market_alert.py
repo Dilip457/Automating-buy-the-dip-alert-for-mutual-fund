@@ -28,6 +28,34 @@ INDICES = {
     },
 }
 
+# ── Fund comparison config ────────────────────────────────────────────────────
+# Each entry compares an active fund's benchmark vs a momentum/factor index
+# to show which strategy outperformed on a given day.
+COMPARISONS = [
+    {
+        "title":  "🔄 Small Cap — Active vs Momentum Quality",
+        "fund_a": {
+            "label":     "Nippon Small Cap Direct Growth",
+            "nse_index": "NIFTY SMLCAP 250",
+        },
+        "fund_b": {
+            "label":     "Mirae Asset Nifty Smallcap 250 Momentum Quality 100 ETF FOF",
+            "nse_index": "NIFTY SMLCAP250 MOM QUA 100",
+        },
+    },
+    {
+        "title":  "🔄 Mid Cap — Active vs Momentum",
+        "fund_a": {
+            "label":     "Edelweiss Midcap Direct Growth",
+            "nse_index": "NIFTY MIDCAP 150",
+        },
+        "fund_b": {
+            "label":     "Edelweiss Nifty Midcap 150 Momentum 50 Index Fund",
+            "nse_index": "NIFTY MIDCAP150 MOMENTUM 50",
+        },
+    },
+]
+
 DIP_LEVELS = [
     (5,  "🟡 Minor dip  — Consider small lump sum (~1x SIP)"),
     (10, "🟠 Medium dip — Good opportunity (~2–3x SIP)"),
@@ -143,10 +171,15 @@ def get_index_stats(all_data: list, nse_index: str) -> dict:
     rise_pts = round(current - low_52w,  2)
     rise_pct = round(rise_pts / low_52w  * 100, 2)
 
+    # Daily change — field name varies slightly across NSE API versions
+    day_pct  = round(float(entry.get("percentChange", entry.get("pChange", 0))), 2)
+    day_pts  = round(float(entry.get("change", 0)), 2)
+
     return dict(
         current=current, high_52w=high_52w, low_52w=low_52w,
         drop_pts=drop_pts, drop_pct=drop_pct,
         rise_pts=rise_pts, rise_pct=rise_pct,
+        day_pct=day_pct, day_pts=day_pts,
     )
 
 
@@ -178,6 +211,7 @@ def build_message() -> str:
         lines.append(f"❌ NSE connection failed: {e}")
         return "\n".join(lines)
 
+    # ── Section 1 : Dip monitor (existing) ───────────────────────────────────
     for name, meta in INDICES.items():
         try:
             d = get_index_stats(all_data, meta["nse_index"])
@@ -201,6 +235,49 @@ def build_message() -> str:
         "🟠 10–14% → Medium lump sum",
         "🔴 15–19% → Large lump sum",
         "🚨 20%+   → Max lump sum",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    # ── Section 2 : Daily return comparison (new) ─────────────────────────────
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "📈 *DAILY RETURN COMPARISON*",
+        "_(Active fund benchmark vs Momentum/Factor index — today's performance)_",
+        "━━━━━━━━━━━━━━━━━━━━━━\n",
+    ]
+
+    for comp in COMPARISONS:
+        lines.append(f"*{comp['title']}*")
+        try:
+            da = get_index_stats(all_data, comp["fund_a"]["nse_index"])
+            db = get_index_stats(all_data, comp["fund_b"]["nse_index"])
+
+            sign_a = "+" if da["day_pct"] >= 0 else ""
+            sign_b = "+" if db["day_pct"] >= 0 else ""
+
+            # Determine today's outperformer
+            if da["day_pct"] > db["day_pct"]:
+                verdict = f"🏆 Active ({comp['fund_a']['label']}) outperformed today"
+            elif db["day_pct"] > da["day_pct"]:
+                verdict = f"🏆 Momentum ({comp['fund_b']['label']}) outperformed today"
+            else:
+                verdict = "🤝 Both indices moved equally today"
+
+            lines += [
+                f"  📌 {comp['fund_a']['label']}",
+                f"     Today : `{sign_a}{da['day_pct']:.2f}%`  ({sign_a}{da['day_pts']:,.2f} pts)",
+                f"     Now   : `{da['current']:,.2f}`  |  52W ↑ drop: `{da['drop_pct']:+.2f}%`",
+                f"  📌 {comp['fund_b']['label']}",
+                f"     Today : `{sign_b}{db['day_pct']:.2f}%`  ({sign_b}{db['day_pts']:,.2f} pts)",
+                f"     Now   : `{db['current']:,.2f}`  |  52W ↑ drop: `{db['drop_pct']:+.2f}%`",
+                f"  {verdict}",
+                "",
+            ]
+        except Exception as e:
+            lines += [f"  ❌ Error: {e}", ""]
+
+    lines += [
         "━━━━━━━━━━━━━━━━━━━━━━",
         "_Data via NSE India (official). Not financial advice._",
     ]
