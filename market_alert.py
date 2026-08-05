@@ -167,10 +167,12 @@ def get_index_stats(all_data: list, nse_index: str) -> dict:
     current  = round(float(entry["last"]),    2)
     high_52w = round(float(entry["yearHigh"]),2)
     low_52w  = round(float(entry["yearLow"]), 2)
+
+    # Guard against zero values (NSE returns 0 for some newer/factor indices)
     drop_pts = round(current - high_52w, 2)
-    drop_pct = round(drop_pts / high_52w * 100, 2)
+    drop_pct = round(drop_pts / high_52w * 100, 2) if high_52w else 0.0
     rise_pts = round(current - low_52w,  2)
-    rise_pct = round(rise_pts / low_52w  * 100, 2)
+    rise_pct = round(rise_pts / low_52w  * 100, 2) if low_52w  else 0.0
 
     # Daily change — field name varies slightly across NSE API versions
     day_pct  = round(float(entry.get("percentChange", entry.get("pChange", 0))), 2)
