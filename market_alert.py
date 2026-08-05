@@ -40,7 +40,7 @@ COMPARISONS = [
         },
         "fund_b": {
             "label":     "Mirae Asset Nifty Smallcap 250 Momentum Quality 100 ETF FOF",
-            "nse_index": "NIFTY SMLCAP250 MOM QUA 100",
+            "nse_index": "NIFTYSML250MQ 100",
         },
     },
     {
@@ -51,7 +51,7 @@ COMPARISONS = [
         },
         "fund_b": {
             "label":     "Edelweiss Nifty Midcap 150 Momentum 50 Index Fund",
-            "nse_index": "NIFTY MIDCAP150 MOMENTUM 50",
+            "nse_index": "NIFTYM150MOMNTM50",
         },
     },
 ]
@@ -157,10 +157,11 @@ def get_index_stats(all_data: list, nse_index: str) -> dict:
         None,
     )
     if entry is None:
-        available = [row.get("indexSymbol") for row in all_data]
+        # Limit to first 30 symbols to keep error messages short (Telegram 4096-char limit)
+        available = [row.get("indexSymbol") for row in all_data][:30]
         raise ValueError(
-            f"'{nse_index}' not found in NSE response.\n"
-            f"Available symbols: {available}"
+            f"'{nse_index}' not found in NSE response. "
+            f"First 30 available: {available}"
         )
 
     current  = round(float(entry["last"]),    2)
