@@ -8,6 +8,7 @@ Notify : Multiple Telegram chats / channels (comma-separated TELEGRAM_CHAT_IDS)
 
 import os
 import time
+import calendar
 import requests
 import pytz
 from datetime import datetime
@@ -84,6 +85,14 @@ NSE_HEADERS = {
 MAX_RETRIES  = 3
 TIMEOUT_HOME = 30
 TIMEOUT_API  = 30
+
+
+# ── Month-end detection ───────────────────────────────────────────────────────
+def is_last_day_of_month() -> bool:
+    """Return True if today (IST) is the last calendar day of the current month."""
+    ist   = pytz.timezone("Asia/Kolkata")
+    today = datetime.now(ist).date()
+    return today.day == calendar.monthrange(today.year, today.month)[1]
 
 
 # ── NSE session ───────────────────────────────────────────────────────────────
@@ -169,33 +178,24 @@ def get_index_stats(all_data: list, nse_index: str) -> dict:
     )
 
 
-# ── Fetch actual mutual fund NAV daily return ─────────────────────────────────
-def get_fund_daily_return(amfi_code: int, label: str) -> float:
+# ── Shared NAV fetch (with retry) ─────────────────────────────────────────────
+def _fetch_nav_data(amfi_code: int, label: str) -> list:
     """
-    Returns daily NAV return %:  (nav_today - nav_prev) / nav_prev * 100
-    Source: mfapi.in (AMFI data)
-
-    Retries up to MAX_RETRIES times with exponential back-off to handle
-    transient HTTPSConnectionPool / timeout errors from api.mfapi.in.
+    Fetch full NAV history from mfapi.in with retry / back-off.
+    Returns the 'data' list (reverse-chronological, most recent first).
+    Each entry: {"date": "DD-MM-YYYY", "nav": "123.456"}
     """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"  [Attempt {attempt}] Fetching NAV for '{label}' (code {amfi_code})…")
-            resp = requests.get(
-                f"{MFAPI_BASE}/{amfi_code}",
-                timeout=30,          # raised from 15 s — mfapi.in can be slow
-            )
+            resp = requests.get(f"{MFAPI_BASE}/{amfi_code}", timeout=30)
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if len(data) < 2:
                 raise ValueError(
                     f"Not enough NAV history for '{label}' (code {amfi_code})"
                 )
-            nav_today = float(data[0]["nav"])
-            nav_prev  = float(data[1]["nav"])
-            if nav_prev == 0:
-                raise ValueError(f"Previous NAV is zero for '{label}'")
-            return round((nav_today - nav_prev) / nav_prev * 100, 2)
+            return data
         except (requests.exceptions.Timeout,
                 requests.exceptions.ConnectionError) as e:
             print(f"  ⚠️ NAV fetch attempt {attempt} failed (network): {e}")
@@ -212,6 +212,77 @@ def get_fund_daily_return(amfi_code: int, label: str) -> float:
             raise RuntimeError(
                 f"Failed to fetch NAV for '{label}' (code {amfi_code}): {e}"
             ) from e
+
+
+# ── Fetch actual mutual fund NAV daily return ─────────────────────────────────
+def get_fund_daily_return(amfi_code: int, label: str) -> float:
+    """
+    Returns daily NAV return %:  (nav_today - nav_prev) / nav_prev * 100
+    Source: mfapi.in (AMFI data)
+    """
+    data      = _fetch_nav_data(amfi_code, label)
+    nav_today = float(data[0]["nav"])
+    nav_prev  = float(data[1]["nav"])
+    if nav_prev == 0:
+        raise ValueError(f"Previous NAV is zero for '{label}'")
+    return round((nav_today - nav_prev) / nav_prev * 100, 2)
+
+
+# ── Fetch mutual fund monthly return (month-end only) ─────────────────────────
+def get_fund_monthly_return(amfi_code: int, label: str) -> tuple:
+    """
+    Returns (monthly_return_pct, month_label) where:
+      monthly_return_pct = (nav_month_end - nav_prev_month_end) / nav_prev_month_end * 100
+      month_label        = e.g. "Jul 2026"
+
+    Base NAV = last available trading-day NAV of the *previous* calendar month.
+    Current NAV = most recent entry in the data (today, the month-end).
+
+    mfapi.in date format: "DD-MM-YYYY", data is reverse-chronological.
+    """
+    ist   = pytz.timezone("Asia/Kolkata")
+    today = datetime.now(ist).date()
+
+    # Determine previous month / year
+    if today.month == 1:
+        prev_month, prev_year = 12, today.year - 1
+    else:
+        prev_month, prev_year = today.month - 1, today.year
+
+    data      = _fetch_nav_data(amfi_code, label)
+    nav_today = float(data[0]["nav"])
+
+    # Walk reverse-chronological list; first entry whose month == prev_month
+    # is the last trading day of the previous month.
+    nav_base      = None
+    base_date_str = None
+    for entry in data[1:]:
+        entry_date = datetime.strptime(entry["date"], "%d-%m-%Y").date()
+        if entry_date.year == prev_year and entry_date.month == prev_month:
+            nav_base      = float(entry["nav"])
+            base_date_str = entry["date"]
+            break
+        # Gone past the previous month without a match — use this entry as base
+        if (entry_date.year, entry_date.month) < (prev_year, prev_month):
+            nav_base      = float(entry["nav"])
+            base_date_str = entry["date"]
+            break
+
+    if nav_base is None:
+        raise ValueError(
+            f"Could not find previous-month NAV for '{label}' "
+            f"(looking for {prev_month:02d}-{prev_year})"
+        )
+    if nav_base == 0:
+        raise ValueError(f"Previous-month NAV is zero for '{label}'")
+
+    month_label = datetime(prev_year, prev_month, 1).strftime("%b %Y")
+    monthly_ret = round((nav_today - nav_base) / nav_base * 100, 2)
+    print(
+        f"  ✅ Monthly return for '{label}': base NAV {nav_base} "
+        f"({base_date_str}) → today {nav_today} = {monthly_ret:+.2f}%"
+    )
+    return monthly_ret, month_label
 
 
 # ── Compact dip signal ────────────────────────────────────────────────────────
@@ -256,7 +327,7 @@ def build_message() -> str:
         except Exception as e:
             lines += [f"*{name}*", f"  ❌ {e}", ""]
 
-    # ── Section 2 : Fund return comparison ───────────────────────────────────
+    # ── Section 2 : Daily fund return comparison ──────────────────────────────
     lines += [
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
         "💹 *TODAY'S FUND RETURNS*",
@@ -274,9 +345,8 @@ def build_message() -> str:
                 comp["fund_b"]["amfi_code"], comp["fund_b"]["label"]
             )
 
-            fmt_a = f"+{ret_a:.2f}%" if ret_a >= 0 else f"{ret_a:.2f}%"
-            fmt_b = f"+{ret_b:.2f}%" if ret_b >= 0 else f"{ret_b:.2f}%"
-
+            fmt_a   = f"+{ret_a:.2f}%" if ret_a >= 0 else f"{ret_a:.2f}%"
+            fmt_b   = f"+{ret_b:.2f}%" if ret_b >= 0 else f"{ret_b:.2f}%"
             badge_a = " 🏆" if ret_a > ret_b else ""
             badge_b = " 🏆" if ret_b > ret_a else ""
 
@@ -287,6 +357,40 @@ def build_message() -> str:
             ]
         except Exception as e:
             lines += [f"  ❌ {e}", ""]
+
+    # ── Section 3 : Monthly fund returns (month-end only) ─────────────────────
+    if is_last_day_of_month():
+        print("📅 Month-end detected — appending monthly return summary…")
+        lines += [
+            "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
+            "📅 *MONTHLY FUND RETURNS*",
+            "_Month-end recap — Active vs Momentum_",
+            "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n",
+        ]
+
+        for comp in COMPARISONS:
+            lines.append(f"*{comp['title']}*")
+            try:
+                mret_a, month_lbl = get_fund_monthly_return(
+                    comp["fund_a"]["amfi_code"], comp["fund_a"]["label"]
+                )
+                mret_b, _         = get_fund_monthly_return(
+                    comp["fund_b"]["amfi_code"], comp["fund_b"]["label"]
+                )
+
+                fmt_a   = f"+{mret_a:.2f}%" if mret_a >= 0 else f"{mret_a:.2f}%"
+                fmt_b   = f"+{mret_b:.2f}%" if mret_b >= 0 else f"{mret_b:.2f}%"
+                badge_a = " 🏆" if mret_a > mret_b else ""
+                badge_b = " 🏆" if mret_b > mret_a else ""
+
+                lines += [
+                    f"  _({month_lbl} → today)_",
+                    f"  ▸ {comp['fund_a']['short_label']}  `{fmt_a}`{badge_a}",
+                    f"  ▸ {comp['fund_b']['short_label']}  `{fmt_b}`{badge_b}",
+                    "",
+                ]
+            except Exception as e:
+                lines += [f"  ❌ {e}", ""]
 
     lines += [
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
