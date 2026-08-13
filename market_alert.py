@@ -174,17 +174,44 @@ def get_fund_daily_return(amfi_code: int, label: str) -> float:
     """
     Returns daily NAV return %:  (nav_today - nav_prev) / nav_prev * 100
     Source: mfapi.in (AMFI data)
+
+    Retries up to MAX_RETRIES times with exponential back-off to handle
+    transient HTTPSConnectionPool / timeout errors from api.mfapi.in.
     """
-    resp = requests.get(f"{MFAPI_BASE}/{amfi_code}", timeout=15)
-    resp.raise_for_status()
-    data = resp.json().get("data", [])
-    if len(data) < 2:
-        raise ValueError(f"Not enough NAV history for '{label}' (code {amfi_code})")
-    nav_today = float(data[0]["nav"])
-    nav_prev  = float(data[1]["nav"])
-    if nav_prev == 0:
-        raise ValueError(f"Previous NAV is zero for '{label}'")
-    return round((nav_today - nav_prev) / nav_prev * 100, 2)
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(f"  [Attempt {attempt}] Fetching NAV for '{label}' (code {amfi_code})…")
+            resp = requests.get(
+                f"{MFAPI_BASE}/{amfi_code}",
+                timeout=30,          # raised from 15 s — mfapi.in can be slow
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if len(data) < 2:
+                raise ValueError(
+                    f"Not enough NAV history for '{label}' (code {amfi_code})"
+                )
+            nav_today = float(data[0]["nav"])
+            nav_prev  = float(data[1]["nav"])
+            if nav_prev == 0:
+                raise ValueError(f"Previous NAV is zero for '{label}'")
+            return round((nav_today - nav_prev) / nav_prev * 100, 2)
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
+            print(f"  ⚠️ NAV fetch attempt {attempt} failed (network): {e}")
+            if attempt < MAX_RETRIES:
+                wait = attempt * 10          # 10 s, 20 s, …
+                print(f"  Retrying in {wait}s…")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(
+                    f"mfapi.in timed out for '{label}' after {MAX_RETRIES} attempts: {e}"
+                ) from e
+        except Exception as e:
+            # Non-network errors (bad JSON, HTTP 4xx/5xx, etc.) — fail fast
+            raise RuntimeError(
+                f"Failed to fetch NAV for '{label}' (code {amfi_code}): {e}"
+            ) from e
 
 
 # ── Compact dip signal ────────────────────────────────────────────────────────
