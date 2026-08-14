@@ -4,37 +4,45 @@ Data   : NSE India official API (allIndices endpoint)
          Returns yearHigh / yearLow directly — same data as nseindia.com
          mfapi.in for actual mutual fund NAV daily returns
 Notify : Multiple Telegram chats / channels (comma-separated TELEGRAM_CHAT_IDS)
+Output : Infographic PNG sent via Telegram sendPhoto
+         Falls back to plain-text sendMessage if Pillow is not installed.
 """
 
 import os
+import io
 import time
 import calendar
 import requests
 import pytz
 from datetime import datetime
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("WARNING: Pillow not installed — falling back to text messages.")
+
 # ── Index config ──────────────────────────────────────────────────────────────
 INDICES = {
-    "🏦 Nifty 50": {
+    "Nifty 50": {
         "nse_index": "NIFTY 50",
         "fund":      "Large Cap Index",
     },
-    "📈 Nifty Midcap 150": {
+    "Nifty Midcap 150": {
         "nse_index": "NIFTY MIDCAP 150",
         "fund":      "Edelweiss Mid Cap",
     },
-    "🚀 Nifty Smallcap 250": {
+    "Nifty Smallcap 250": {
         "nse_index": "NIFTY SMLCAP 250",
         "fund":      "Nippon Small Cap",
     },
 }
 
 # ── Fund comparison config ────────────────────────────────────────────────────
-# amfi_code : AMFI scheme code — verify at https://api.mfapi.in/mf/search?q=<name>
-# short_label: compact name shown in the Telegram card
 COMPARISONS = [
     {
-        "title":  "🔄 Small Cap — Active vs Momentum",
+        "title":  "Small Cap — Active vs Momentum",
         "fund_a": {
             "label":       "Nippon India Small Cap Fund Direct Growth",
             "short_label": "Nippon India SC Direct",
@@ -47,7 +55,7 @@ COMPARISONS = [
         },
     },
     {
-        "title":  "🔄 Mid Cap — Active vs Momentum",
+        "title":  "Mid Cap — Active vs Momentum",
         "fund_a": {
             "label":       "Edelweiss Mid Cap Fund Direct Growth",
             "short_label": "Edelweiss Mid Cap Direct",
@@ -63,7 +71,6 @@ COMPARISONS = [
 
 MFAPI_BASE = "https://api.mfapi.in/mf"
 
-# Dip thresholds — used only for signal logic
 DIP_LEVELS = [
     (5,  "🟡", "Minor dip",  "~1x SIP"),
     (10, "🟠", "Medium dip", "~2–3x SIP"),
@@ -86,6 +93,23 @@ MAX_RETRIES  = 3
 TIMEOUT_HOME = 30
 TIMEOUT_API  = 30
 
+# ── Infographic palette (GitHub-dark inspired) ────────────────────────────────
+C_BG      = (13,  17,  23)
+C_CARD    = (22,  27,  34)
+C_CARD2   = (30,  37,  46)
+C_BORDER  = (48,  54,  61)
+C_BLUE    = (88,  166, 255)
+C_TEXT    = (230, 237, 243)
+C_SUBTEXT = (139, 148, 158)
+C_GREEN   = (63,  185, 80)
+C_YELLOW  = (210, 153, 34)
+C_ORANGE  = (240, 136, 62)
+C_RED     = (248, 81,  73)
+C_GOLD    = (255, 200, 0)
+
+IMG_W = 900
+PAD   = 32
+
 
 # ── Month-end detection ───────────────────────────────────────────────────────
 def is_last_day_of_month() -> bool:
@@ -93,6 +117,64 @@ def is_last_day_of_month() -> bool:
     ist   = pytz.timezone("Asia/Kolkata")
     today = datetime.now(ist).date()
     return today.day == calendar.monthrange(today.year, today.month)[1]
+
+
+# ── Signal helpers ────────────────────────────────────────────────────────────
+def _signal_color(drop_pct: float) -> tuple:
+    a = abs(drop_pct)
+    if a >= 15: return C_RED
+    if a >= 10: return C_ORANGE
+    if a >= 5:  return C_YELLOW
+    return C_GREEN
+
+
+def _signal_text(drop_pct: float) -> str:
+    a = abs(drop_pct)
+    if a >= 20: return "CRASH ZONE"
+    if a >= 15: return "DEEP DIP"
+    if a >= 10: return "MEDIUM DIP"
+    if a >= 5:  return "MINOR DIP"
+    return "NEAR PEAK"
+
+
+# ── Font loader ───────────────────────────────────────────────────────────────
+def _find_font(size: int, bold: bool = False):
+    """Load a TrueType font with OS-aware fallbacks."""
+    if not PIL_AVAILABLE:
+        return None
+    if bold:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/calibrib.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/calibri.ttf",
+        ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (IOError, OSError):
+            continue
+    return ImageFont.load_default()
+
+
+def _text_w(draw, text: str, font) -> int:
+    """Return pixel width of text."""
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+    except Exception:
+        return len(text) * 8  # rough fallback
 
 
 # ── NSE session ───────────────────────────────────────────────────────────────
@@ -200,7 +282,7 @@ def _fetch_nav_data(amfi_code: int, label: str) -> list:
                 requests.exceptions.ConnectionError) as e:
             print(f"  ⚠️ NAV fetch attempt {attempt} failed (network): {e}")
             if attempt < MAX_RETRIES:
-                wait = attempt * 10          # 10 s, 20 s, …
+                wait = attempt * 10
                 print(f"  Retrying in {wait}s…")
                 time.sleep(wait)
             else:
@@ -208,18 +290,14 @@ def _fetch_nav_data(amfi_code: int, label: str) -> list:
                     f"mfapi.in timed out for '{label}' after {MAX_RETRIES} attempts: {e}"
                 ) from e
         except Exception as e:
-            # Non-network errors (bad JSON, HTTP 4xx/5xx, etc.) — fail fast
             raise RuntimeError(
                 f"Failed to fetch NAV for '{label}' (code {amfi_code}): {e}"
             ) from e
 
 
-# ── Fetch actual mutual fund NAV daily return ─────────────────────────────────
+# ── Daily NAV return ──────────────────────────────────────────────────────────
 def get_fund_daily_return(amfi_code: int, label: str) -> float:
-    """
-    Returns daily NAV return %:  (nav_today - nav_prev) / nav_prev * 100
-    Source: mfapi.in (AMFI data)
-    """
+    """Returns daily NAV return %: (nav_today - nav_prev) / nav_prev * 100"""
     data      = _fetch_nav_data(amfi_code, label)
     nav_today = float(data[0]["nav"])
     nav_prev  = float(data[1]["nav"])
@@ -228,22 +306,16 @@ def get_fund_daily_return(amfi_code: int, label: str) -> float:
     return round((nav_today - nav_prev) / nav_prev * 100, 2)
 
 
-# ── Fetch mutual fund monthly return (month-end only) ─────────────────────────
+# ── Monthly NAV return (month-end only) ───────────────────────────────────────
 def get_fund_monthly_return(amfi_code: int, label: str) -> tuple:
     """
-    Returns (monthly_return_pct, month_label) where:
-      monthly_return_pct = (nav_month_end - nav_prev_month_end) / nav_prev_month_end * 100
-      month_label        = e.g. "Jul 2026"
-
-    Base NAV = last available trading-day NAV of the *previous* calendar month.
-    Current NAV = most recent entry in the data (today, the month-end).
-
+    Returns (monthly_return_pct, month_label).
+    Base = last trading-day NAV of the previous calendar month.
     mfapi.in date format: "DD-MM-YYYY", data is reverse-chronological.
     """
     ist   = pytz.timezone("Asia/Kolkata")
     today = datetime.now(ist).date()
 
-    # Determine previous month / year
     if today.month == 1:
         prev_month, prev_year = 12, today.year - 1
     else:
@@ -252,17 +324,13 @@ def get_fund_monthly_return(amfi_code: int, label: str) -> tuple:
     data      = _fetch_nav_data(amfi_code, label)
     nav_today = float(data[0]["nav"])
 
-    # Walk reverse-chronological list; first entry whose month == prev_month
-    # is the last trading day of the previous month.
-    nav_base      = None
-    base_date_str = None
+    nav_base = base_date_str = None
     for entry in data[1:]:
         entry_date = datetime.strptime(entry["date"], "%d-%m-%Y").date()
         if entry_date.year == prev_year and entry_date.month == prev_month:
             nav_base      = float(entry["nav"])
             base_date_str = entry["date"]
             break
-        # Gone past the previous month without a match — use this entry as base
         if (entry_date.year, entry_date.month) < (prev_year, prev_month):
             nav_base      = float(entry["nav"])
             base_date_str = entry["date"]
@@ -279,55 +347,337 @@ def get_fund_monthly_return(amfi_code: int, label: str) -> tuple:
     month_label = datetime(prev_year, prev_month, 1).strftime("%b %Y")
     monthly_ret = round((nav_today - nav_base) / nav_base * 100, 2)
     print(
-        f"  ✅ Monthly return for '{label}': base NAV {nav_base} "
+        f"  ✅ Monthly return for '{label}': base {nav_base} "
         f"({base_date_str}) → today {nav_today} = {monthly_ret:+.2f}%"
     )
     return monthly_ret, month_label
 
 
-# ── Compact dip signal ────────────────────────────────────────────────────────
-def get_signal(drop_pct: float) -> str:
-    icon, label, action = "🟢", "Near peak", "SIP only"
-    for threshold, ico, lbl, act in DIP_LEVELS:
-        if abs(drop_pct) >= threshold:
-            icon, label, action = ico, lbl, act
-    return f"{icon} {label}  ·  {action}"
-
-
-# ── Build Telegram message ────────────────────────────────────────────────────
-def build_message() -> str:
+# ── Collect all report data ───────────────────────────────────────────────────
+def collect_report_data() -> dict:
+    """
+    Fetch all data and return a structured dict used by both the
+    infographic renderer and the text-message fallback.
+    """
     ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist).strftime("%d %b %Y  ·  %I:%M %p IST")
+    now = datetime.now(ist)
 
-    lines = [
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
-        "📊 *DAILY DIP MONITOR*",
-        f"_🗓 {now}_",
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n",
-    ]
+    report = {
+        "date":       now.strftime("%d %b %Y  ·  %I:%M %p IST"),
+        "indices":    [],
+        "daily":      [],
+        "monthly":    None,
+        "month_label": None,
+        "nse_error":  None,
+    }
 
+    # NSE data
     try:
         session  = build_nse_session()
         all_data = fetch_all_indices(session)
     except Exception as e:
-        lines.append(f"❌ NSE connection failed: {e}")
-        return "\n".join(lines)
+        report["nse_error"] = str(e)
+        return report
 
-    # ── Section 1 : Index dip cards ───────────────────────────────────────────
+    # Index stats
     for name, meta in INDICES.items():
         try:
             d = get_index_stats(all_data, meta["nse_index"])
-            trend = "📉" if d["drop_pct"] < 0 else "📈"
+            report["indices"].append({
+                "name":         name,
+                "fund":         meta["fund"],
+                "current":      d["current"],
+                "drop_pct":     d["drop_pct"],
+                "high_52w":     d["high_52w"],
+                "signal_text":  _signal_text(d["drop_pct"]),
+                "signal_color": _signal_color(d["drop_pct"]),
+                "error":        None,
+            })
+        except Exception as e:
+            report["indices"].append({"name": name, "error": str(e)})
+
+    # Daily fund returns
+    for comp in COMPARISONS:
+        try:
+            ret_a = get_fund_daily_return(comp["fund_a"]["amfi_code"], comp["fund_a"]["label"])
+            ret_b = get_fund_daily_return(comp["fund_b"]["amfi_code"], comp["fund_b"]["label"])
+            report["daily"].append({
+                "title":  comp["title"],
+                "fund_a": {"short_label": comp["fund_a"]["short_label"],
+                           "ret": ret_a, "winner": ret_a > ret_b},
+                "fund_b": {"short_label": comp["fund_b"]["short_label"],
+                           "ret": ret_b, "winner": ret_b > ret_a},
+                "error":  None,
+            })
+        except Exception as e:
+            report["daily"].append({"title": comp["title"], "error": str(e)})
+
+    # Monthly returns (month-end only)
+    if is_last_day_of_month():
+        print("📅 Month-end detected — collecting monthly returns…")
+        monthly = []
+        for comp in COMPARISONS:
+            try:
+                mret_a, month_lbl = get_fund_monthly_return(
+                    comp["fund_a"]["amfi_code"], comp["fund_a"]["label"])
+                mret_b, _         = get_fund_monthly_return(
+                    comp["fund_b"]["amfi_code"], comp["fund_b"]["label"])
+                monthly.append({
+                    "title":  comp["title"],
+                    "fund_a": {"short_label": comp["fund_a"]["short_label"],
+                               "ret": mret_a, "winner": mret_a > mret_b},
+                    "fund_b": {"short_label": comp["fund_b"]["short_label"],
+                               "ret": mret_b, "winner": mret_b > mret_a},
+                    "error":  None,
+                })
+                report["month_label"] = month_lbl
+            except Exception as e:
+                monthly.append({"title": comp["title"], "error": str(e)})
+        report["monthly"] = monthly
+
+    return report
+
+
+# ── Infographic renderer ──────────────────────────────────────────────────────
+def render_infographic(report: dict) -> bytes:
+    """Render the report dict as a PNG infographic and return raw bytes."""
+
+    # ── Pre-load fonts ────────────────────────────────────────────────────────
+    f_title   = _find_font(30, bold=True)
+    f_date    = _find_font(15)
+    f_section = _find_font(12)
+    f_idx_name = _find_font(13, bold=True)
+    f_idx_val  = _find_font(20, bold=True)
+    f_idx_pct  = _find_font(16, bold=True)
+    f_idx_sub  = _find_font(11)
+    f_comp_ttl = _find_font(14, bold=True)
+    f_fund_lbl = _find_font(13)
+    f_fund_ret = _find_font(14, bold=True)
+    f_footer   = _find_font(11)
+
+    # ── Layout constants ──────────────────────────────────────────────────────
+    INNER_W    = IMG_W - 2 * PAD
+    CARD_GAP   = 12
+    CARD_W     = (INNER_W - 2 * CARD_GAP) // 3
+    CARD_H     = 132
+    ROW_H      = 24   # height per fund row
+    COMP_TITLE_H = 26
+
+    has_monthly = report.get("monthly") is not None
+
+    def _comp_block_h(comps):
+        h = 0
+        for c in comps:
+            h += COMP_TITLE_H + (55 if c.get("error") else 2 * ROW_H + 10)
+        return h
+
+    # ── Calculate total image height ──────────────────────────────────────────
+    total_h = (
+        100 +                                          # header
+        16 +                                           # divider + gap
+        22 + CARD_H + 20 +                             # index label + cards + gap
+        16 +                                           # divider + gap
+        22 + _comp_block_h(report.get("daily", [])) +  # daily label + blocks
+        10 +                                           # gap
+        16 +                                           # divider + gap
+        (22 + _comp_block_h(report.get("monthly", [])) + 10 + 16
+         if has_monthly else 0) +
+        40 +                                           # footer
+        PAD                                            # bottom padding
+    )
+
+    img  = Image.new("RGB", (IMG_W, total_h), C_BG)
+    draw = ImageDraw.Draw(img)
+
+    y = 0  # running cursor
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    draw.rectangle([0, 0, IMG_W, 100], fill=C_CARD)
+    draw.rectangle([0, 0, 5, 100], fill=C_BLUE)          # left accent bar
+    draw.text((PAD + 10, 18), "DAILY DIP MONITOR",
+              font=f_title, fill=C_BLUE)
+    draw.text((PAD + 10, 62), report.get("date", ""),
+              font=f_date, fill=C_SUBTEXT)
+    y = 100
+
+    # ── Divider ───────────────────────────────────────────────────────────────
+    def _divider(yy):
+        draw.line([(0, yy), (IMG_W, yy)], fill=C_BORDER, width=1)
+        return yy + 15
+
+    y = _divider(y)
+
+    # ── NSE error (early exit) ────────────────────────────────────────────────
+    if report.get("nse_error"):
+        draw.text((PAD, y), f"NSE Error: {report['nse_error'][:80]}",
+                  font=f_fund_lbl, fill=C_RED)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf.read()
+
+    # ── Section label helper ──────────────────────────────────────────────────
+    def _section_label(yy, text):
+        draw.text((PAD, yy), text, font=f_section, fill=C_SUBTEXT)
+        return yy + 22
+
+    # ── Index cards ───────────────────────────────────────────────────────────
+    y = _section_label(y, "INDEX STATUS")
+
+    for i, idx in enumerate(report.get("indices", [])):
+        cx = PAD + i * (CARD_W + CARD_GAP)
+        cy = y
+
+        # Card background + border
+        draw.rounded_rectangle(
+            [cx, cy, cx + CARD_W, cy + CARD_H],
+            radius=8, fill=C_CARD, outline=C_BORDER, width=1,
+        )
+
+        if idx.get("error"):
+            draw.text((cx + 12, cy + 12), idx.get("name", "?"),
+                      font=f_idx_name, fill=C_TEXT)
+            draw.text((cx + 12, cy + 38), "Data unavailable",
+                      font=f_idx_sub, fill=C_RED)
+        else:
+            sig_col = idx["signal_color"]
+
+            # Colored left accent bar inside card
+            draw.rounded_rectangle(
+                [cx + 1, cy + 1, cx + 5, cy + CARD_H - 1],
+                radius=4, fill=sig_col,
+            )
+
+            # Index name
+            draw.text((cx + 14, cy + 10), idx["name"],
+                      font=f_idx_name, fill=C_TEXT)
+
+            # Current value
+            val_str = f"{idx['current']:,.2f}"
+            draw.text((cx + 14, cy + 30), val_str,
+                      font=f_idx_val, fill=C_TEXT)
+
+            # Drop %
+            drop_str = f"{idx['drop_pct']:+.2f}%"
+            draw.text((cx + 14, cy + 62), drop_str,
+                      font=f_idx_pct, fill=sig_col)
+            draw.text((cx + 14, cy + 84), "from 52W high",
+                      font=f_idx_sub, fill=C_SUBTEXT)
+
+            # Signal text
+            draw.text((cx + 14, cy + 106), idx["signal_text"],
+                      font=f_idx_sub, fill=sig_col)
+
+    y += CARD_H + 20
+    y = _divider(y)
+
+    # ── Comparison block renderer ─────────────────────────────────────────────
+    def _draw_comparisons(yy, comps, bg_toggle=False):
+        for ci, comp in enumerate(comps):
+            # Alternating card background
+            block_h = (COMP_TITLE_H + 55 if comp.get("error")
+                       else COMP_TITLE_H + 2 * ROW_H + 10)
+            bg = C_CARD2 if ci % 2 == 0 else C_CARD
+            draw.rounded_rectangle(
+                [PAD, yy, IMG_W - PAD, yy + block_h],
+                radius=6, fill=bg, outline=C_BORDER, width=1,
+            )
+
+            # Title
+            draw.text((PAD + 12, yy + 6), comp["title"],
+                      font=f_comp_ttl, fill=C_TEXT)
+            yy += COMP_TITLE_H
+
+            if comp.get("error"):
+                draw.text((PAD + 12, yy + 4),
+                          f"Error: {comp['error'][:70]}",
+                          font=f_footer, fill=C_RED)
+                yy += 55
+            else:
+                for fund_key in ("fund_a", "fund_b"):
+                    fund    = comp[fund_key]
+                    ret_str = f"{fund['ret']:+.2f}%"
+                    lbl_col = C_TEXT
+                    ret_col = C_GOLD if fund["winner"] else C_TEXT
+
+                    # Fund label (left)
+                    draw.text((PAD + 20, yy + 4), fund["short_label"],
+                              font=f_fund_lbl, fill=lbl_col)
+
+                    # Return value (right-aligned)
+                    rw = _text_w(draw, ret_str, f_fund_ret)
+                    star_offset = 22 if fund["winner"] else 0
+                    draw.text(
+                        (IMG_W - PAD - rw - star_offset - 12, yy + 4),
+                        ret_str, font=f_fund_ret, fill=ret_col,
+                    )
+
+                    # Winner star
+                    if fund["winner"]:
+                        draw.text(
+                            (IMG_W - PAD - star_offset + 4, yy + 4),
+                            "★", font=f_fund_ret, fill=C_GOLD,
+                        )
+
+                    yy += ROW_H
+                yy += 10  # gap after each comparison block
+
+        return yy
+
+    # ── Daily returns ─────────────────────────────────────────────────────────
+    y = _section_label(y, "TODAY'S FUND RETURNS  —  Active vs Momentum")
+    y = _draw_comparisons(y, report.get("daily", []))
+    y += 10
+    y = _divider(y)
+
+    # ── Monthly returns (month-end only) ──────────────────────────────────────
+    if has_monthly:
+        month_lbl = report.get("month_label", "")
+        y = _section_label(y, f"MONTHLY RETURNS  ({month_lbl} → today)")
+        y = _draw_comparisons(y, report.get("monthly", []))
+        y += 10
+        y = _divider(y)
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    draw.text((PAD, y),
+              "Source: NSE India  ·  AMFI via mfapi.in",
+              font=f_footer, fill=C_SUBTEXT)
+    draw.text((PAD, y + 16),
+              "Not financial advice.",
+              font=f_footer, fill=C_SUBTEXT)
+
+    # ── Encode to PNG bytes ───────────────────────────────────────────────────
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    buf.seek(0)
+    return buf.read()
+
+
+# ── Text-message fallback (used when Pillow is unavailable) ──────────────────
+def build_text_message(report: dict) -> str:
+    lines = [
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
+        "📊 *DAILY DIP MONITOR*",
+        f"_🗓 {report.get('date', '')}_",
+        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n",
+    ]
+
+    if report.get("nse_error"):
+        lines.append(f"❌ NSE connection failed: {report['nse_error']}")
+        return "\n".join(lines)
+
+    for idx in report.get("indices", []):
+        if idx.get("error"):
+            lines += [f"*{idx['name']}*", f"  ❌ {idx['error']}", ""]
+        else:
+            trend = "📉" if idx["drop_pct"] < 0 else "📈"
             lines += [
-                f"*{name}*  _· {meta['fund']}_",
-                f"  `{d['current']:>12,.2f}`  {trend} `{d['drop_pct']:+.2f}%` from 52W high",
-                f"  {get_signal(d['drop_pct'])}",
+                f"*{idx['name']}*  _· {idx['fund']}_",
+                f"  `{idx['current']:>12,.2f}`  {trend} `{idx['drop_pct']:+.2f}%` from 52W high",
+                f"  {idx['signal_text']}",
                 "",
             ]
-        except Exception as e:
-            lines += [f"*{name}*", f"  ❌ {e}", ""]
 
-    # ── Section 2 : Daily fund return comparison ──────────────────────────────
     lines += [
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
         "💹 *TODAY'S FUND RETURNS*",
@@ -335,62 +685,35 @@ def build_message() -> str:
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n",
     ]
 
-    for comp in COMPARISONS:
-        lines.append(f"*{comp['title']}*")
-        try:
-            ret_a = get_fund_daily_return(
-                comp["fund_a"]["amfi_code"], comp["fund_a"]["label"]
-            )
-            ret_b = get_fund_daily_return(
-                comp["fund_b"]["amfi_code"], comp["fund_b"]["label"]
-            )
-
-            fmt_a   = f"+{ret_a:.2f}%" if ret_a >= 0 else f"{ret_a:.2f}%"
-            fmt_b   = f"+{ret_b:.2f}%" if ret_b >= 0 else f"{ret_b:.2f}%"
-            badge_a = " 🏆" if ret_a > ret_b else ""
-            badge_b = " 🏆" if ret_b > ret_a else ""
-
+    for comp in report.get("daily", []):
+        lines.append(f"*🔄 {comp['title']}*")
+        if comp.get("error"):
+            lines += [f"  ❌ {comp['error']}", ""]
+        else:
+            fa, fb = comp["fund_a"], comp["fund_b"]
             lines += [
-                f"  ▸ {comp['fund_a']['short_label']}  `{fmt_a}`{badge_a}",
-                f"  ▸ {comp['fund_b']['short_label']}  `{fmt_b}`{badge_b}",
+                f"  ▸ {fa['short_label']}  `{fa['ret']:+.2f}%`{'  🏆' if fa['winner'] else ''}",
+                f"  ▸ {fb['short_label']}  `{fb['ret']:+.2f}%`{'  🏆' if fb['winner'] else ''}",
                 "",
             ]
-        except Exception as e:
-            lines += [f"  ❌ {e}", ""]
 
-    # ── Section 3 : Monthly fund returns (month-end only) ─────────────────────
-    if is_last_day_of_month():
-        print("📅 Month-end detected — appending monthly return summary…")
+    if report.get("monthly"):
         lines += [
             "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
-            "📅 *MONTHLY FUND RETURNS*",
-            "_Month-end recap — Active vs Momentum_",
+            f"📅 *MONTHLY RETURNS*  _({report.get('month_label', '')} → today)_",
             "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n",
         ]
-
-        for comp in COMPARISONS:
-            lines.append(f"*{comp['title']}*")
-            try:
-                mret_a, month_lbl = get_fund_monthly_return(
-                    comp["fund_a"]["amfi_code"], comp["fund_a"]["label"]
-                )
-                mret_b, _         = get_fund_monthly_return(
-                    comp["fund_b"]["amfi_code"], comp["fund_b"]["label"]
-                )
-
-                fmt_a   = f"+{mret_a:.2f}%" if mret_a >= 0 else f"{mret_a:.2f}%"
-                fmt_b   = f"+{mret_b:.2f}%" if mret_b >= 0 else f"{mret_b:.2f}%"
-                badge_a = " 🏆" if mret_a > mret_b else ""
-                badge_b = " 🏆" if mret_b > mret_a else ""
-
+        for comp in report["monthly"]:
+            lines.append(f"*🔄 {comp['title']}*")
+            if comp.get("error"):
+                lines += [f"  ❌ {comp['error']}", ""]
+            else:
+                fa, fb = comp["fund_a"], comp["fund_b"]
                 lines += [
-                    f"  _({month_lbl} → today)_",
-                    f"  ▸ {comp['fund_a']['short_label']}  `{fmt_a}`{badge_a}",
-                    f"  ▸ {comp['fund_b']['short_label']}  `{fmt_b}`{badge_b}",
+                    f"  ▸ {fa['short_label']}  `{fa['ret']:+.2f}%`{'  🏆' if fa['winner'] else ''}",
+                    f"  ▸ {fb['short_label']}  `{fb['ret']:+.2f}%`{'  🏆' if fb['winner'] else ''}",
                     "",
                 ]
-            except Exception as e:
-                lines += [f"  ❌ {e}", ""]
 
     lines += [
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
@@ -400,8 +723,33 @@ def build_message() -> str:
     return "\n".join(lines)
 
 
-# ── Send to multiple Telegram chats/channels ──────────────────────────────────
-def send_telegram(message: str, bot_token: str, chat_ids: list) -> bool:
+# ── Telegram: send photo ──────────────────────────────────────────────────────
+def send_telegram_photo(image_bytes: bytes, bot_token: str, chat_ids: list) -> bool:
+    url     = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    success = False
+    for chat_id in chat_ids:
+        chat_id = chat_id.strip()
+        if not chat_id:
+            continue
+        try:
+            resp = requests.post(
+                url,
+                data={"chat_id": chat_id},
+                files={"photo": ("dip_monitor.png", image_bytes, "image/png")},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                print(f"✅ Photo sent to {chat_id}")
+                success = True
+            else:
+                print(f"❌ Photo failed for {chat_id}: {resp.text}")
+        except Exception as e:
+            print(f"❌ Photo error for {chat_id}: {e}")
+    return success
+
+
+# ── Telegram: send text (fallback) ───────────────────────────────────────────
+def send_telegram_text(message: str, bot_token: str, chat_ids: list) -> bool:
     url     = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     success = False
     for chat_id in chat_ids:
@@ -415,12 +763,12 @@ def send_telegram(message: str, bot_token: str, chat_ids: list) -> bool:
                 timeout=15,
             )
             if resp.status_code == 200:
-                print(f"✅ Sent to {chat_id}")
+                print(f"✅ Text sent to {chat_id}")
                 success = True
             else:
-                print(f"❌ Failed for {chat_id}: {resp.text}")
+                print(f"❌ Text failed for {chat_id}: {resp.text}")
         except Exception as e:
-            print(f"❌ Error for {chat_id}: {e}")
+            print(f"❌ Text error for {chat_id}: {e}")
     return success
 
 
@@ -435,12 +783,23 @@ if __name__ == "__main__":
 
     CHAT_IDS = [c.strip() for c in CHAT_IDS_RAW.split(",") if c.strip()]
 
-    print("Fetching data from NSE India…")
-    message = build_message()
-    print(message)
+    print("Fetching data…")
+    report = collect_report_data()
 
-    print(f"\nSending to {len(CHAT_IDS)} chat(s)…")
-    if send_telegram(message, BOT_TOKEN, CHAT_IDS):
+    if PIL_AVAILABLE:
+        print("Rendering infographic…")
+        try:
+            image_bytes = render_infographic(report)
+            print(f"Sending infographic to {len(CHAT_IDS)} chat(s)…")
+            ok = send_telegram_photo(image_bytes, BOT_TOKEN, CHAT_IDS)
+        except Exception as e:
+            print(f"⚠️ Infographic render failed ({e}), falling back to text…")
+            ok = send_telegram_text(build_text_message(report), BOT_TOKEN, CHAT_IDS)
+    else:
+        print(f"Sending text to {len(CHAT_IDS)} chat(s)…")
+        ok = send_telegram_text(build_text_message(report), BOT_TOKEN, CHAT_IDS)
+
+    if ok:
         print("✅ Done!")
     else:
         print("❌ All sends failed.")
