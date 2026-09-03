@@ -2,8 +2,8 @@ name: Daily Market Dip Alert
 
 on:
   schedule:
-    # 4:30 PM IST = 11:00 AM UTC (30 min after NSE close, bhavcopy is published by then)
-    - cron: '00 11 * * 1-5'
+     # 8:00 PM IST = 2:30 PM UTC
+    - cron: '30 14 * * 1-5'
   workflow_dispatch:
 
 jobs:
