@@ -1,18 +1,24 @@
 name: Daily Market Dip Alert
 
 on:
-  # ── Runs every weekday at 4:00 PM IST (10:30 AM UTC) ──────────────────────
-  # NSE closes at 3:30 PM IST, so this fires 30 min after close
+  # ── Runs every weekday at 8:00 PM IST (2:30 PM UTC) ───────────────────────
+  # Late enough for mutual fund NAVs to reflect the day's close.
+  # Note: GitHub may start scheduled runs late when its runners are busy.
   schedule:
-    - cron: '30 10 * * 1-5'
+    - cron: '30 14 * * 1-5'
 
   # ── Also allows manual trigger from GitHub UI ──────────────────────────────
   workflow_dispatch:
 
+# `actions: write` lets the keepalive step below re-enable this workflow.
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   send-market-alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -23,11 +29,26 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install system fonts (for infographic rendering)
+        run: sudo apt-get install -y fonts-dejavu-core fonts-liberation
+
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
       - name: Run market dip alert
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_IDS:   ${{ secrets.TELEGRAM_CHAT_IDS }}
+          TELEGRAM_CHAT_IDS:  ${{ secrets.TELEGRAM_CHAT_IDS }}
         run: python market_alert.py
+
+      # ── Keepalive ──────────────────────────────────────────────────────────
+      # GitHub disables scheduled workflows in public repos after 60 days
+      # without a commit ("disabled_inactivity"), which silently stops alerts.
+      # Re-enabling the workflow through the API on every run resets that
+      # timer, so the schedule keeps going with no dummy commits.
+      - name: Keep schedule alive
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/market_alert.yml/enable"
